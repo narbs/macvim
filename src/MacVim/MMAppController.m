@@ -70,6 +70,11 @@ static NSTimeInterval MMReplyTimeout = 5;
 // directory more or less immediately.
 static CFTimeInterval MMEventStreamLatency = 0.1;
 
+// Time to wait for a Vim process to write its session file when quitting, and
+// for a restored window's Vim process to start.
+static NSTimeInterval MMSessionSaveTimeout = 2;
+static NSTimeInterval MMRestoreWindowTimeout = 20;
+
 static float MMCascadeHorizontalOffset = 21;
 static float MMCascadeVerticalOffset = 23;
 
@@ -149,6 +154,12 @@ typedef struct
 - (void)addInputSourceChangedObserver;
 - (void)removeInputSourceChangedObserver;
 - (void)inputSourceChanged:(NSNotification *)notification;
+- (NSString *)sessionDirectory;
+- (NSString *)sessionPathForIdentifier:(NSString *)identifier;
+- (void)restoreWindowWithSessionIdentifier:(NSString *)identifier
+        completionHandler:(void (^)(NSWindow *, NSError *))completionHandler;
+- (void)restoreWindowTimedOut:(NSNumber *)pidKey;
+- (void)saveSessionsForRestoration;
 @end
 
 
@@ -233,6 +244,7 @@ fsEventCallback(ConstFSEventStreamRef streamRef,
         @"",                              MMLastUsedBundleVersionKey,
         [NSNumber numberWithBool:YES],    MMShowWhatsNewOnStartupKey,
         [NSNumber numberWithBool:0],      MMScrollOneDirectionOnlyKey,
+        [NSNumber numberWithBool:YES],    MMRestoreWindowsKey,
         nil];
 
     [ud registerDefaults:macvimDefaults];
@@ -313,6 +325,7 @@ fsEventCallback(ConstFSEventStreamRef streamRef,
     preloadPid = -1;
     pidArguments = [NSMutableDictionary new];
     inputQueues = [NSMutableDictionary new];
+    restoreRequests = [NSMutableDictionary new];
 
     // NOTE: Do not use the default connection since the Logitech Control
     // Center (LCC) input manager steals and this would cause MacVim to
@@ -377,6 +390,7 @@ fsEventCallback(ConstFSEventStreamRef streamRef,
     [connection release];  connection = nil;
     [inputQueues release];  inputQueues = nil;
     [pidArguments release];  pidArguments = nil;
+    [restoreRequests release];  restoreRequests = nil;
     [vimControllers release];  vimControllers = nil;
     [cachedVimControllers release];  cachedVimControllers = nil;
     [openSelectionString release];  openSelectionString = nil;
@@ -651,6 +665,38 @@ fsEventCallback(ConstFSEventStreamRef streamRef,
                 integerForKey:MMLastWindowClosedBehaviorKey]);
 }
 
+- (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)app
+{
+    // Only an NSString (the session identifier) is stored in the restorable
+    // state of Vim windows, which is decoded securely.
+    return YES;
+}
+
+/// Called by Cocoa to restore a Vim window when the app relaunches (see
+/// NSWindowRestoration).
++ (void)restoreWindowWithIdentifier:(NSString *)identifier
+                              state:(NSCoder *)state
+                  completionHandler:(void (^)(NSWindow *, NSError *))
+                                        completionHandler
+{
+    NSString *sessionId = nil;
+    if ([identifier isEqualToString:MMVimWindowRestorationIdentifier]) {
+        sessionId = [state decodeObjectOfClass:[NSString class]
+                            forKey:MMSessionIdentifierRestorationKey];
+    }
+
+    MMAppController *app = [MMAppController sharedInstance];
+    if (!(app && sessionId)) {
+        completionHandler(nil, [NSError errorWithDomain:NSCocoaErrorDomain
+                                                   code:NSUserCancelledError
+                                               userInfo:nil]);
+        return;
+    }
+
+    [app restoreWindowWithSessionIdentifier:sessionId
+                          completionHandler:completionHandler];
+}
+
 - (NSApplicationTerminateReply)applicationShouldTerminate:
     (NSApplication *)sender
 {
@@ -752,6 +798,12 @@ fsEventCallback(ConstFSEventStreamRef streamRef,
     // Tell all Vim processes to terminate now (otherwise they'll leave swap
     // files behind).
     if (NSTerminateNow == reply) {
+        isTerminating = YES;
+
+        // Save the contents of each window so that they can be restored the
+        // next time MacVim launches.
+        [self saveSessionsForRestoration];
+
         e = [vimControllers objectEnumerator];
         id vc;
         while ((vc = [e nextObject])) {
@@ -871,6 +923,17 @@ fsEventCallback(ConstFSEventStreamRef streamRef,
     if (NSNotFound == idx) {
         ASLogDebug(@"Controller not found, probably due to duplicate removal");
         return;
+    }
+
+    // The window was closed by the user, so it won't be restored.  Remove its
+    // session file (if any).  When terminating the session files must be
+    // kept.
+    if (!isTerminating) {
+        NSString *sessionId = [[controller windowController]
+                                                    sessionIdentifier];
+        NSString *path = [self sessionPathForIdentifier:sessionId];
+        if (path)
+            [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
     }
 
     [controller retain];
@@ -2865,6 +2928,17 @@ fsEventCallback(ConstFSEventStreamRef streamRef,
     } else {
         [vimControllers addObject:vc];
 
+        // If this Vim process was launched to restore a window then the
+        // window controller needs to hand its window over to Cocoa once it is
+        // presented.
+        NSDictionary *restore = [restoreRequests objectForKey:pidKey];
+        if (restore) {
+            MMWindowController *wc = [vc windowController];
+            [wc setSessionIdentifier:[restore objectForKey:@"sessionId"]];
+            [wc setRestorationHandler:[restore objectForKey:@"handler"]];
+            [restoreRequests removeObjectForKey:pidKey];
+        }
+
         if (args && [NSNull null] != args)
             [vc passArguments:args];
 
@@ -3034,6 +3108,153 @@ fsEventCallback(ConstFSEventStreamRef streamRef,
 {
     id nc = [NSDistributedNotificationCenter defaultCenter];
     [nc removeObserver:self];
+}
+
+- (NSString *)sessionDirectory
+{
+    NSArray *dirs = NSSearchPathForDirectoriesInDomains(
+            NSApplicationSupportDirectory, NSUserDomainMask, YES);
+    if ([dirs count] == 0)
+        return nil;
+
+    return [[[dirs objectAtIndex:0] stringByAppendingPathComponent:@"MacVim"]
+                                stringByAppendingPathComponent:@"Sessions"];
+}
+
+- (NSString *)sessionPathForIdentifier:(NSString *)identifier
+{
+    // The identifier comes from the restorable state on disk so only accept
+    // well-formed UUIDs to make sure it can't refer to other paths.
+    if (!identifier)
+        return nil;
+    NSUUID *uuid = [[[NSUUID alloc] initWithUUIDString:identifier]
+                                                            autorelease];
+    if (!uuid)
+        return nil;
+
+    NSString *file = [[uuid UUIDString] stringByAppendingPathExtension:@"vim"];
+    return [[self sessionDirectory] stringByAppendingPathComponent:file];
+}
+
+- (void)restoreWindowWithSessionIdentifier:(NSString *)identifier
+        completionHandler:(void (^)(NSWindow *, NSError *))completionHandler
+{
+    NSError *cancelError = [NSError errorWithDomain:NSCocoaErrorDomain
+                                               code:NSUserCancelledError
+                                           userInfo:nil];
+    NSString *path = [self sessionPathForIdentifier:identifier];
+
+    if (![[NSUserDefaults standardUserDefaults]
+                boolForKey:MMRestoreWindowsKey]
+            || !path
+            || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        ASLogInfo(@"Not restoring window with session %@", identifier);
+        completionHandler(nil, cancelError);
+        return;
+    }
+
+    ASLogInfo(@"Restoring window with session %@", path);
+
+    // The window will be created asynchronously once the Vim process has
+    // started, so tell Cocoa that state restoration is still ongoing.  The
+    // handler below makes sure Cocoa is notified exactly once, whether the
+    // window was restored, the Vim process died, or it timed out.
+    [NSApp extendStateRestoration];
+    __block BOOL done = NO;
+    void (^handler)(NSWindow *, NSError *) = ^(NSWindow *win, NSError *err) {
+        if (done)
+            return;
+        done = YES;
+        completionHandler(win, err);
+        [NSApp completeStateRestoration];
+    };
+
+    int pid = [self launchVimProcessWithArguments:@[@"-S", path]
+                                 workingDirectory:nil];
+    if (-1 == pid) {
+        handler(nil, cancelError);
+        return;
+    }
+
+    NSNumber *pidKey = [NSNumber numberWithInt:pid];
+    handler = [[handler copy] autorelease];
+    [restoreRequests setObject:@{ @"sessionId": identifier,
+                                  @"handler": handler }
+                        forKey:pidKey];
+
+    [self performSelector:@selector(restoreWindowTimedOut:)
+               withObject:pidKey
+               afterDelay:MMRestoreWindowTimeout];
+}
+
+- (void)restoreWindowTimedOut:(NSNumber *)pidKey
+{
+    // The Vim process never connected.  (If it did connect the window
+    // controller is responsible for calling the handler.)
+    NSDictionary *restore = [restoreRequests objectForKey:pidKey];
+    if (!restore)
+        return;
+
+    ASLogNotice(@"Timed out restoring window pid=%@", pidKey);
+
+    void (^handler)(NSWindow *, NSError *) = [restore objectForKey:@"handler"];
+    handler(nil, [NSError errorWithDomain:NSCocoaErrorDomain
+                                     code:NSUserCancelledError
+                                 userInfo:nil]);
+    [restoreRequests removeObjectForKey:pidKey];
+}
+
+- (void)saveSessionsForRestoration
+{
+    // Ask each Vim process to save a session file which is used to restore
+    // its window contents the next time MacVim launches (if Cocoa decides to
+    // restore windows, see "Close windows when quitting an application" in
+    // System Settings).  Session files that don't belong to an open window
+    // are removed.
+    if (![[NSUserDefaults standardUserDefaults]
+                boolForKey:MMRestoreWindowsKey])
+        return;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dir = [self sessionDirectory];
+    if (!dir || ![fm createDirectoryAtPath:dir
+               withIntermediateDirectories:YES
+                                attributes:nil
+                                     error:NULL]) {
+        ASLogNotice(@"Could not create session directory %@", dir);
+        return;
+    }
+
+    NSMutableSet *keep = [NSMutableSet set];
+
+    for (MMVimController *vc in vimControllers) {
+        NSString *path = [self sessionPathForIdentifier:
+                                [[vc windowController] sessionIdentifier]];
+        if (!path)
+            continue;
+
+        // If Vim doesn't respond, keep any previous session for this window.
+        if (![vc saveSessionToFile:path timeout:MMSessionSaveTimeout])
+            ASLogNotice(@"Failed to save session pid=%d", [vc pid]);
+
+        [keep addObject:[path lastPathComponent]];
+    }
+
+    // Windows that are still being restored keep their session files.
+    for (NSDictionary *restore in [restoreRequests allValues]) {
+        NSString *path = [self sessionPathForIdentifier:
+                                        [restore objectForKey:@"sessionId"]];
+        if (path)
+            [keep addObject:[path lastPathComponent]];
+    }
+
+    for (NSString *file in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
+        if ([[file pathExtension] isEqualToString:@"vim"]
+                && ![keep containsObject:file]) {
+            [fm removeItemAtPath:[dir stringByAppendingPathComponent:file]
+                           error:NULL];
+        }
+    }
 }
 
 - (void)inputSourceChanged:(NSNotification *)notification

@@ -27,7 +27,8 @@
 
 @interface MMAppController : NSObject <
     MMAppProtocol,
-    NSUserInterfaceItemSearching
+    NSUserInterfaceItemSearching,
+    NSWindowRestoration
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_14
     , NSMenuItemValidation
 #endif
@@ -58,6 +59,9 @@
 
     BOOL                hasShownWindowBefore;
     BOOL                shouldShowWhatsNewPage;
+
+    NSMutableDictionary *restoreRequests; ///< Pending window restorations, keyed by Vim PID
+    BOOL                isTerminating;
     
 #if !DISABLE_SPARKLE
 #if USE_SPARKLE_1

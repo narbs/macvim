@@ -5865,6 +5865,7 @@ MMNoTitleBarWindow	gui_mac.txt	/*MMNoTitleBarWindow*
 MMNonNativeFullScreenSafeAreaBehavior	gui_mac.txt	/*MMNonNativeFullScreenSafeAreaBehavior*
 MMNonNativeFullScreenShowMenu	gui_mac.txt	/*MMNonNativeFullScreenShowMenu*
 MMRendererClipToRow	gui_mac.txt	/*MMRendererClipToRow*
+MMRestoreWindows	gui_mac.txt	/*MMRestoreWindows*
 MMScrollOneDirectionOnly	gui_mac.txt	/*MMScrollOneDirectionOnly*
 MMShareFindPboard	gui_mac.txt	/*MMShareFindPboard*
 MMShowAddTabButton	gui_mac.txt	/*MMShowAddTabButton*
@@ -9172,6 +9173,7 @@ macvim-multilang	gui_mac.txt	/*macvim-multilang*
 macvim-options	gui_mac.txt	/*macvim-options*
 macvim-preferences	gui_mac.txt	/*macvim-preferences*
 macvim-prefs	gui_mac.txt	/*macvim-prefs*
+macvim-restore-windows	gui_mac.txt	/*macvim-restore-windows*
 macvim-services	gui_mac.txt	/*macvim-services*
 macvim-settings	gui_mac.txt	/*macvim-settings*
 macvim-shift-movement	gui_mac.txt	/*macvim-shift-movement*

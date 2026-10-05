@@ -515,6 +515,43 @@ static BOOL isUnsafeMessage(int msgid);
     return eval;
 }
 
+/// Ask Vim to write a session file (see ":h :mksession") describing its
+/// current tabs, windows and buffers.  Used to restore windows when macOS
+/// restores application state.  The window position and size are owned by
+/// Cocoa so "resize" and "winpos" are temporarily removed from
+/// 'sessionoptions'.
+///
+/// @return NO if Vim could not be reached within the timeout.  Note that a
+/// YES return value does not guarantee that the file was written.
+- (BOOL)saveSessionToFile:(NSString *)path timeout:(NSTimeInterval)timeout
+{
+    if (!isInitialized)
+        return NO;
+
+    // Escape the path for use inside a single-quoted Vim string.
+    NSString *quoted = [path stringByReplacingOccurrencesOfString:@"'"
+                                                       withString:@"''"];
+    NSString *expr = [NSString stringWithFormat:
+        @"execute(["
+         "'let g:mm_ssop_save = &sessionoptions',"
+         "'set sessionoptions-=resize sessionoptions-=winpos',"
+         "'mksession! ' .. fnameescape('%@'),"
+         "'let &sessionoptions = g:mm_ssop_save',"
+         "'unlet g:mm_ssop_save'"
+         "], 'silent!')", quoted];
+
+    // Don't let a busy Vim process hold up quitting for too long.
+    NSConnection *conn = [backendProxy connectionForProxy];
+    NSTimeInterval oldTimeout = [conn replyTimeout];
+    [conn setReplyTimeout:timeout];
+
+    NSString *eval = [self evaluateVimExpression:expr];
+
+    [conn setReplyTimeout:oldTimeout];
+
+    return eval != nil;
+}
+
 - (id)evaluateVimExpressionCocoa:(NSString *)expr
                      errorString:(NSString **)errstr
 {

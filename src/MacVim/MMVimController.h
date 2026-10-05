@@ -90,6 +90,7 @@
                timeout:(NSTimeInterval)timeout;
 - (void)addVimInput:(NSString *)string;
 - (NSString *)evaluateVimExpression:(NSString *)expr;
+- (BOOL)saveSessionToFile:(NSString *)path timeout:(NSTimeInterval)timeout;
 - (id)evaluateVimExpressionCocoa:(NSString *)expr
                      errorString:(NSString **)errstr;
 - (BOOL)hasSelectedText;
