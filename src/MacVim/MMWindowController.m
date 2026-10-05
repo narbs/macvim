@@ -73,6 +73,9 @@
 #import "Miscellaneous.h"
 #import "MMTabline/MMTabline.h"
 
+NSString * const MMVimWindowRestorationIdentifier = @"MMVimWindow";
+NSString * const MMSessionIdentifierRestorationKey = @"MMSessionIdentifier";
+
 
 // These have to be the same as in option.h
 #define FUOPT_MAXVERT         0x001
@@ -230,6 +233,19 @@
     wcb |= NSWindowCollectionBehaviorFullScreenPrimary;
     [win setCollectionBehavior:wcb];
 
+    // Let macOS restore this window when the app is relaunched.  Cocoa saves
+    // the window frame, Space and full-screen state; the contents are saved
+    // by Vim in a session file named by sessionIdentifier (see
+    // -[MMAppController saveSessionsForRestoration]).
+    sessionIdentifier = [[[NSUUID UUID] UUIDString] retain];
+    if ([[NSUserDefaults standardUserDefaults]
+            boolForKey:MMRestoreWindowsKey]) {
+        [win setRestorationClass:[MMAppController class]];
+        [win setIdentifier:MMVimWindowRestorationIdentifier];
+    } else {
+        [win setRestorable:NO];
+    }
+
     // This makes windows animate when opened
     if (![[NSUserDefaults standardUserDefaults]
           boolForKey:MMDisableLaunchAnimationKey]) {
@@ -267,6 +283,8 @@
     [afterWindowPresentedQueue release];  afterWindowPresentedQueue = nil;
     [lastSetTitle release]; lastSetTitle = nil;
     [documentFilename release]; documentFilename = nil;
+    [sessionIdentifier release]; sessionIdentifier = nil;
+    [restorationHandler release]; restorationHandler = nil;
 
     [super dealloc];
 }
@@ -305,9 +323,36 @@
     windowAutosaveKey = [key copy];
 }
 
+- (NSString *)sessionIdentifier
+{
+    return sessionIdentifier;
+}
+
+- (void)setSessionIdentifier:(NSString *)identifier
+{
+    [sessionIdentifier autorelease];
+    sessionIdentifier = [identifier copy];
+    [decoratedWindow invalidateRestorableState];
+}
+
+- (void)setRestorationHandler:(void (^)(NSWindow *, NSError *))handler
+{
+    [restorationHandler release];
+    restorationHandler = [handler copy];
+}
+
 - (void)cleanup
 {
     ASLogDebug(@"");
+
+    // The Vim process went away before the window was presented, so tell
+    // Cocoa that this window could not be restored.
+    if (restorationHandler) {
+        restorationHandler(nil, [NSError errorWithDomain:NSCocoaErrorDomain
+                                                    code:NSUserCancelledError
+                                                userInfo:nil]);
+        [restorationHandler release];  restorationHandler = nil;
+    }
 
     // NOTE: Must set this before possibly leaving full-screen.
     setupDone = NO;
@@ -353,8 +398,17 @@
     [self resizeWindowToFitContentSize:[vimView desiredSize]
                           keepOnScreen:YES];
 
+    if (restorationHandler) {
+        // This window is being restored by Cocoa.  Hand it over now so that
+        // Cocoa applies the saved frame (and Space, full-screen state, etc.)
+        // before it is shown.  The Vim view is resized to fit the restored
+        // frame in windowDidResize:.
+        restorationHandler(decoratedWindow, nil);
+        [restorationHandler release];  restorationHandler = nil;
+    }
 
-    [decoratedWindow makeKeyAndOrderFront:self];
+    if (![decoratedWindow isMiniaturized])
+        [decoratedWindow makeKeyAndOrderFront:self];
 
     [decoratedWindow setBlurRadius:blurRadius];
 
@@ -1481,6 +1535,12 @@
     else {
         [vimView setFrameSizeKeepGUISize:[self contentSize]];
     }
+}
+
+- (void)window:(NSWindow *)window willEncodeRestorableState:(NSCoder *)state
+{
+    [state encodeObject:sessionIdentifier
+                 forKey:MMSessionIdentifierRestorationKey];
 }
 
 - (void)windowDidChangeBackingProperties:(NSNotification *)notification

@@ -27,6 +27,7 @@
 @interface MMAppController (Private)
 + (NSDictionary*)parseOpenURL:(NSURL*)url;
 - (void)processInputQueues:(id)sender;
+- (NSString *)sessionPathForIdentifier:(NSString *)identifier;
 @end
 
 @interface MMVimController (Private)
@@ -446,6 +447,22 @@ static BOOL vimProcessInputBlocked = NO;
     XCTAssertEqualObjects([[NSURL URLWithString:@"file:///foo%bar"] path], nil); // Invalid decoded file URL leads to nil
     XCTAssertEqualObjects([MMAppController parseOpenURL:[NSURL URLWithString:@"mvim://open?url=file:///foo%2525bar"]], @{@"url": @"file:///foo%25bar"});
     XCTAssertEqualObjects([[NSURL URLWithString:@"file:///foo%25bar"] path], @"/foo%bar");
+}
+
+/// Tests that session files used for window restoration can only be named by
+/// a UUID, since the identifier is read from restorable state on disk.
+- (void)testSessionPathForIdentifier {
+    MMAppController *app = MMAppController.sharedInstance;
+
+    XCTAssertNil([app sessionPathForIdentifier:nil]);
+    XCTAssertNil([app sessionPathForIdentifier:@""]);
+    XCTAssertNil([app sessionPathForIdentifier:@"../../foo"]);
+    XCTAssertNil([app sessionPathForIdentifier:@"7F0F5E5A-6A43-4F27-9C51-6E7D6C1B2A90/../foo"]);
+
+    // Valid UUIDs are normalized to upper case.
+    NSString *path = [app sessionPathForIdentifier:@"7f0f5e5a-6a43-4f27-9c51-6e7d6c1b2a90"];
+    XCTAssertEqualObjects(path.lastPathComponent, @"7F0F5E5A-6A43-4F27-9C51-6E7D6C1B2A90.vim");
+    XCTAssertEqualObjects(path.stringByDeletingLastPathComponent.lastPathComponent, @"Sessions");
 }
 
 /// Test that the "Vim Tutor" menu item works and can be used to launch the

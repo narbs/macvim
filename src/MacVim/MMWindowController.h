@@ -14,6 +14,11 @@
 
 @class MMWindow;
 @class MMFullScreenWindow;
+
+/// Identifier of restorable Vim windows (see NSWindowRestoration).
+extern NSString * const MMVimWindowRestorationIdentifier;
+/// Key of the session identifier in a window's restorable state.
+extern NSString * const MMSessionIdentifierRestorationKey;
 @class MMVimController;
 @class MMVimView;
 
@@ -59,6 +64,9 @@
     int                 blurRadius;
     BOOL                backgroundDark;
     NSMutableArray      *afterWindowPresentedQueue;
+
+    NSString            *sessionIdentifier; ///< Names the session file used to restore this window
+    void                (^restorationHandler)(NSWindow *, NSError *); ///< Pending window restoration (see MMAppController)
 }
 
 - (id)initWithVimController:(MMVimController *)controller;
@@ -67,6 +75,9 @@
 - (MMFullScreenWindow*)fullScreenWindow;
 - (NSString *)windowAutosaveKey;
 - (void)setWindowAutosaveKey:(NSString *)key;
+- (NSString *)sessionIdentifier;
+- (void)setSessionIdentifier:(NSString *)identifier;
+- (void)setRestorationHandler:(void (^)(NSWindow *, NSError *))handler;
 - (void)cleanup;
 - (void)openWindow;
 - (BOOL)presentWindow:(id)unused;

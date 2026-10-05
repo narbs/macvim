@@ -191,6 +191,29 @@ The advantage of using the latter method is that the settings relating to file
 opening in the settings panel are respected, and files open instantly if
 |Quickstart| is enabled.
 
+Restoring windows ~
+						*macvim-restore-windows*
+MacVim takes part in macOS window restoration.  When you quit MacVim, each
+window's tabs, splits and buffers are saved with |:mksession|.  When MacVim
+is opened again and macOS restores its windows, every window comes back where
+it was, with the same contents.  macOS restores the window position, size,
+Space and native full screen state.  The session files are stored in
+"~/Library/Application Support/MacVim/Sessions".
+
+Whether macOS restores windows depends on the "Close windows when quitting an
+application" setting in System Settings > Desktop & Dock.  When it is on (the
+default), windows are only restored if you quit with Cmd-Option-Q.
+
+Vim writes the sessions using your 'sessionoptions', except that "resize" and
+"winpos" are left out because macOS restores the window geometry.  Unsaved
+changes are not part of a session; MacVim still warns about modified buffers
+when quitting.  A window that is closed before quitting is not restored.
+Windows in non-native full screen are not restored.
+
+To turn this off: >
+	defaults write org.vim.MacVim MMRestoreWindows 0
+<
+
 Starting MacVim from a terminal ~
 
 						    *mvim* *macvim-cmdline*
@@ -305,6 +328,8 @@ KEY				VALUE ~
 *MMTitlebarAppearsTransparent*	enable a transparent titlebar [bool]
 *MMAppearanceModeSelection*	dark mode selection (|macvim-dark-mode|)[bool]
 *MMRendererClipToRow*		clip tall characters to the row they are on [bool]
+*MMRestoreWindows*		restore windows when MacVim relaunches, see
+				|macvim-restore-windows| [bool]
 *MMSmoothResize*		allow smooth resizing of MacVim window [bool]
 *MMShareFindPboard*		share search text to Find Pasteboard [bool]
 *MMTextInsetBottom*		text area offset in pixels [int]
